@@ -1,13 +1,26 @@
 export type Role = 'user' | 'assistant';
 
+export interface ThoughtStep {
+  id: string;
+  step_title: string;
+  summary: string;
+  timestamp: number;
+}
+
 export interface Message {
   id: string;
   role: Role;
   content: string;
   timestamp: number;
+  image?: string;
   isError?: boolean;
   errorMessage?: string;
   isStreaming?: boolean;
+  isThinking?: boolean;
+  thoughts?: ThoughtStep[];
+  rawThoughts?: string;
+  currentThoughtSentence?: string;
+  thoughtDurationMs?: number;
 }
 
 export interface Conversation {
@@ -36,6 +49,11 @@ export interface ElaraSettings {
   backdropOpacity: number;
   backdropBlur: number;
   timezone: string;
+  fontSize?: number;
+  textBackground?: 'slate' | 'deep-onyx' | 'midnight-blue' | 'cyber-violet' | 'emerald-terminal' | 'frosted-glass' | 'high-contrast';
+  thinkingBudget?: number;
+  apiKey?: string;
+  customBackendUrl?: string;
 }
 
 export interface RoomLocation {
@@ -204,18 +222,53 @@ export const AVAILABLE_MODELS: GeminiModelOption[] = [
   {
     id: 'gemini-3.7-flash',
     name: 'Gemini 3.7 Flash',
-    description: 'Fast, intelligent, multimodal model optimized for reasoning & natural conversation.',
+    description: 'Latest flagship Flash - High-speed reasoning & agentic execution.',
     isDefault: true,
   },
   {
-    id: 'gemini-3.1-pro-preview',
+    id: 'gemini-3.6-flash',
+    name: 'Gemini 3.6 Flash',
+    description: 'Balanced performance & high speed.',
+  },
+  {
+    id: 'gemini-3.5-flash',
+    name: 'Gemini 3.5 Flash',
+    description: 'Standard text generation workhorse.',
+  },
+  {
+    id: 'gemini-3.5-flash-lite',
+    name: 'Gemini 3.5 Flash Lite',
+    description: 'Ultra-low latency, high throughput.',
+  },
+  {
+    id: 'gemini-3.1-pro',
     name: 'Gemini 3.1 Pro',
-    description: 'Advanced reasoning, deep logic, and complex dialogue capabilities.',
+    description: 'Advanced reasoning, deep logic, and complex tasks.',
   },
   {
     id: 'gemini-3.1-flash-lite',
     name: 'Gemini 3.1 Flash Lite',
-    description: 'Lightweight model designed for speed and rapid responses.',
+    description: 'Lightweight text execution.',
+  },
+  {
+    id: 'gemini-3-flash',
+    name: 'Gemini 3 Flash',
+    description: 'Frontier performance text engine.',
+  },
+  {
+    id: 'gemini-pro-latest',
+    name: 'Gemini Pro Latest (Alias)',
+    description: 'Points dynamically to the current stable Pro text model.',
+  },
+  {
+    id: 'gemini-flash-latest',
+    name: 'Gemini Flash Latest (Alias)',
+    description: 'Points dynamically to the current stable Flash text model.',
+  },
+  {
+    id: 'gemini-flash-lite-latest',
+    name: 'Gemini Flash-Lite Latest (Alias)',
+    description: 'Points dynamically to the current stable Flash-Lite text model.',
   },
 ];
 

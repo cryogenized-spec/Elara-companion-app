@@ -29,6 +29,7 @@ import {
   HelpCircle,
   FileText,
 } from 'lucide-react';
+import { runDirectMemoryMaintenance } from '../lib/geminiDirectClient';
 
 interface MemoryModalProps {
   isOpen: boolean;
@@ -39,6 +40,7 @@ interface MemoryModalProps {
   onExportMemory: () => void;
   onImportMemory: (jsonStr: string) => void;
   userName: string;
+  apiKey?: string;
 }
 
 const CATEGORIES: MemoryCategory[] = [
@@ -79,6 +81,7 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
   onExportMemory,
   onImportMemory,
   userName,
+  apiKey,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -214,20 +217,40 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
     setMaintenanceMessage('Elara is auditing her memory notebook...');
 
     try {
-      const res = await fetch('/api/memory/maintain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          memories: memoryState.memories,
-          userName: userName || 'User',
-        }),
-      });
+      let actions: any[] = [];
+      let summary = '';
 
-      const data = await res.json();
-      if (data.actions && data.actions.length > 0) {
+      if (apiKey && apiKey.trim()) {
+        const res = await runDirectMemoryMaintenance(
+          apiKey.trim(),
+          memoryState.memories,
+          userName || 'User'
+        );
+        actions = res.actions || [];
+        summary = res.summary || '';
+      } else {
+        const res = await fetch('/api/memory/maintain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            memories: memoryState.memories,
+            userName: userName || 'User',
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error('Please configure your Gemini API Key in Settings to run memory optimization.');
+        }
+
+        const data = await res.json();
+        actions = data.actions || [];
+        summary = data.summary || '';
+      }
+
+      if (actions && actions.length > 0) {
         // Apply returned maintenance actions
         let current = [...memoryState.memories];
-        for (const act of data.actions) {
+        for (const act of actions) {
           if (act.type === 'DELETE' && act.targetId) {
             current = current.filter((m) => m.id !== act.targetId);
           } else if (act.type === 'UPDATE' && act.targetId && act.memory) {
@@ -250,13 +273,13 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
           memories: current,
           lastMaintenanceAt: new Date().toISOString(),
         });
-        setMaintenanceMessage(data.summary || 'Memory notebook audited and updated.');
+        setMaintenanceMessage(summary || 'Memory notebook audited and updated.');
       } else {
         setMaintenanceMessage('Notebook is fully optimized! No duplicate or obsolete memories found.');
       }
     } catch (err: any) {
       console.error('Maintenance error:', err);
-      setMaintenanceMessage('Failed to complete maintenance check.');
+      setMaintenanceMessage(err?.message || 'Failed to complete maintenance check.');
     } finally {
       setIsMaintaining(false);
     }

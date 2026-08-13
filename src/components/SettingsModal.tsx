@@ -17,6 +17,13 @@ import {
   RefreshCw,
   Maximize2,
   SlidersHorizontal,
+  Type,
+  Palette,
+  Brain,
+  Zap,
+  Key,
+  Globe,
+  ExternalLink,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -293,7 +300,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <input
                         type="range"
                         min="0.5"
-                        max="2.5"
+                        max="3.0"
                         step="0.1"
                         value={formData.portraitScale ?? 1.0}
                         onChange={(e) =>
@@ -307,11 +314,165 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="flex justify-between text-[10px] text-zinc-500 font-mono">
                         <span>0.5x</span>
                         <span>1.0x (Default)</span>
-                        <span>1.5x</span>
-                        <span>2.5x</span>
+                        <span>2.0x</span>
+                        <span>3.0x</span>
                       </div>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* Typography & Font Size Customization */}
+              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <Type className="w-4 h-4 text-sky-400" />
+                      <span>Dialogue Typography & Font Size</span>
+                    </h3>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Adjust the reading font size of dialogue and messages across the chat.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
+                  {/* Live Font Preview Box */}
+                  <div className="bg-zinc-950/80 p-3.5 rounded-xl border border-zinc-800 flex flex-col justify-center min-h-[90px]">
+                    <span className="text-[10px] text-zinc-500 font-mono mb-1">Live Font Preview ({formData.fontSize ?? 14}px)</span>
+                    <p
+                      style={{ fontSize: `${formData.fontSize ?? 14}px` }}
+                      className="text-zinc-200 leading-relaxed transition-all font-sans"
+                    >
+                      "Good evening. I'm right here beside you whenever you're ready."
+                    </p>
+                  </div>
+
+                  {/* Font Size Slider */}
+                  <div className="sm:col-span-2 space-y-2 bg-zinc-950/60 p-3 rounded-xl border border-zinc-800/80">
+                    <div className="flex justify-between items-center text-xs">
+                      <label className="font-medium text-zinc-300">Message Text Size</label>
+                      <span className="font-mono text-sky-400 font-semibold text-xs">
+                        {formData.fontSize ?? 14} px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="10"
+                      max="20"
+                      step="1"
+                      value={formData.fontSize ?? 14}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          fontSize: parseInt(e.target.value, 10),
+                        })
+                      }
+                      className="w-full accent-sky-500 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] text-zinc-500 font-mono">
+                      <span>10px (Compact)</span>
+                      <span>14px (Default)</span>
+                      <span>17px</span>
+                      <span>20px (Large)</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Text & Message Background Palette */}
+              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <Palette className="w-4 h-4 text-sky-400" />
+                      <span>Text & Message Bubble Background</span>
+                    </h3>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Choose the ambient color scheme and surface styling for dialogue cards and user bubbles.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {[
+                    {
+                      id: 'slate',
+                      name: 'Obsidian Slate (Default)',
+                      desc: 'Balanced dark graphite with subtle borders',
+                      bgClass: 'bg-zinc-900 border-zinc-800 text-zinc-200',
+                      chip: 'bg-zinc-800',
+                    },
+                    {
+                      id: 'deep-onyx',
+                      name: 'Deep Onyx Pitch',
+                      desc: 'Pure deep black canvas with minimal contrast',
+                      bgClass: 'bg-black border-zinc-900 text-zinc-100',
+                      chip: 'bg-black border border-zinc-700',
+                    },
+                    {
+                      id: 'midnight-blue',
+                      name: 'Midnight Sapphire',
+                      desc: 'Deep oceanic navy with subtle azure undertones',
+                      bgClass: 'bg-[#080f20] border-sky-900/60 text-sky-100',
+                      chip: 'bg-[#080f20] border border-sky-600',
+                    },
+                    {
+                      id: 'cyber-violet',
+                      name: 'Cyberpunk Amethyst',
+                      desc: 'Dark obsidian violet with neon purple accents',
+                      bgClass: 'bg-[#120824] border-purple-900/60 text-purple-100',
+                      chip: 'bg-[#120824] border border-purple-600',
+                    },
+                    {
+                      id: 'emerald-terminal',
+                      name: 'Emerald Matrix',
+                      desc: 'Dark cybernetic emerald green terminal tones',
+                      bgClass: 'bg-[#05140d] border-emerald-900/60 text-emerald-100',
+                      chip: 'bg-[#05140d] border border-emerald-600',
+                    },
+                    {
+                      id: 'frosted-glass',
+                      name: 'Frosted Glass Blur',
+                      desc: 'Translucent acrylic glass with delicate edge borders',
+                      bgClass: 'bg-zinc-900/50 backdrop-blur-md border-white/10 text-zinc-100',
+                      chip: 'bg-zinc-800/60 border border-white/20',
+                    },
+                    {
+                      id: 'high-contrast',
+                      name: 'High Contrast Slate',
+                      desc: 'Crisp distinct borders for maximum readability',
+                      bgClass: 'bg-zinc-900 border-2 border-zinc-600 text-white',
+                      chip: 'bg-zinc-900 border-2 border-zinc-400',
+                    },
+                  ].map((themeOpt) => {
+                    const isSelected = (formData.textBackground || 'slate') === themeOpt.id;
+                    return (
+                      <div
+                        key={themeOpt.id}
+                        onClick={() =>
+                          setFormData({
+                            ...formData,
+                            textBackground: themeOpt.id as any,
+                          })
+                        }
+                        className={`p-3 rounded-xl border cursor-pointer transition-all flex items-start gap-3 ${
+                          isSelected
+                            ? 'ring-2 ring-sky-500 bg-sky-950/30 border-sky-500/80 shadow-md'
+                            : 'bg-zinc-950/60 border-zinc-800 hover:border-zinc-700'
+                        }`}
+                      >
+                        <div className={`w-6 h-6 rounded-lg shrink-0 mt-0.5 shadow-sm ${themeOpt.chip}`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-zinc-200">{themeOpt.name}</span>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-sky-400" />}
+                          </div>
+                          <p className="text-[11px] text-zinc-400 mt-0.5 leading-snug">{themeOpt.desc}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -481,6 +642,54 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
+              {/* Gemini API Key Configuration (Required for GitHub Pages / Static hosting) */}
+              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-zinc-800/80 pb-2.5">
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <Key className="w-4 h-4 text-amber-400" />
+                      <span>Gemini API Key (GitHub Pages & Client Mode)</span>
+                    </h3>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Required when hosting as a static GitHub Page without a backend server.
+                    </p>
+                  </div>
+                  <a
+                    href="https://aistudio.google.com/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-950/80 text-sky-400 border border-sky-800/60 text-[11px] hover:bg-sky-900 transition-colors"
+                  >
+                    <span>Get Free Key</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="relative">
+                    <input
+                      type="password"
+                      value={formData.apiKey || ''}
+                      onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+                      placeholder="AIzaSy... (Leave empty to use backend server if deployed to Vercel/Cloud Run)"
+                      className="w-full pl-3 pr-20 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-zinc-100 text-xs font-mono focus:outline-none focus:border-sky-500"
+                    />
+                    {formData.apiKey && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, apiKey: '' })}
+                        className="absolute right-2 top-2 px-2 py-0.5 rounded bg-zinc-800 text-[10px] text-zinc-400 hover:text-zinc-200"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-zinc-500 leading-relaxed">
+                    🔒 <strong>Privacy:</strong> Your key is stored solely in your browser's private <code className="font-mono text-zinc-400">localStorage</code>. When hosting on GitHub Pages, requests go directly to Google Gemini API over HTTPS.
+                  </p>
+                </div>
+              </div>
+
               {/* Model Selection */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
@@ -533,7 +742,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 <div>
                   <div className="flex justify-between items-center mb-1.5">
-                    <label className="text-xs font-medium text-zinc-300">Max Tokens</label>
+                    <label className="text-xs font-medium text-zinc-300">Max Output Tokens</label>
                     <span className="text-xs font-mono text-sky-400">{formData.maxOutputTokens}</span>
                   </div>
                   <input
@@ -548,6 +757,103 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="w-full accent-sky-500 cursor-pointer"
                   />
                   <p className="text-[11px] text-zinc-500 mt-1">Allows substantial long-form roleplay responses.</p>
+                </div>
+              </div>
+
+              {/* LLM Thinking & Reasoning Effort Slider */}
+              <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4 space-y-3.5">
+                <div className="flex items-center justify-between border-b border-zinc-800/80 pb-2.5">
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <Brain className="w-4 h-4 text-sky-400" />
+                      <span>LLM Thinking Effort & Reasoning Budget</span>
+                    </h3>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Controls Gemini 2.5 / 3.7 internal reasoning tokens before generating output.
+                    </p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-lg bg-sky-950/80 text-sky-300 border border-sky-800/60 font-mono text-xs font-semibold">
+                    {formData.thinkingBudget === 0
+                      ? '0 (Off)'
+                      : `${(formData.thinkingBudget ?? 4096).toLocaleString()} Tokens`}
+                  </span>
+                </div>
+
+                {/* Slider */}
+                <div className="space-y-2 bg-zinc-950/60 p-3 rounded-xl border border-zinc-800/80">
+                  <input
+                    type="range"
+                    min="0"
+                    max="16384"
+                    step="512"
+                    value={formData.thinkingBudget ?? 4096}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        thinkingBudget: parseInt(e.target.value, 10),
+                      })
+                    }
+                    className="w-full accent-sky-500 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[10px] text-zinc-500 font-mono">
+                    <span>0 (Off)</span>
+                    <span>2k (Fast)</span>
+                    <span>4k (Standard)</span>
+                    <span>8k (Deep)</span>
+                    <span>16k (Max)</span>
+                  </div>
+                </div>
+
+                {/* Dynamic Status / Description Card */}
+                <div className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800/80 flex items-start gap-2.5 text-xs">
+                  <Zap className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="text-zinc-300 leading-relaxed">
+                    {(formData.thinkingBudget ?? 4096) === 0 && (
+                      <span>
+                        <strong className="text-zinc-100">Thinking Disabled:</strong> Fastest possible response speed. Instant generation without internal thinking scratchpad.
+                      </span>
+                    )}
+                    {(formData.thinkingBudget ?? 4096) > 0 && (formData.thinkingBudget ?? 4096) <= 2048 && (
+                      <span>
+                        <strong className="text-zinc-100">Light / Fast Thinking:</strong> Quick reasoning for conversational flow while verifying tone and safety filters.
+                      </span>
+                    )}
+                    {(formData.thinkingBudget ?? 4096) > 2048 && (formData.thinkingBudget ?? 4096) <= 6144 && (
+                      <span>
+                        <strong className="text-zinc-100">Deep Reasoning (Recommended):</strong> Balances rich character immersion, complex narrative memory, and responsive streaming.
+                      </span>
+                    )}
+                    {(formData.thinkingBudget ?? 4096) > 6144 && (
+                      <span>
+                        <strong className="text-zinc-100">Exhaustive High-Effort Thinking:</strong> Maximum reasoning tokens allocated for deep analysis, intricate plotlines, and nuanced writing.
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Preset Quick Buttons */}
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {[
+                    { label: 'Off (0)', val: 0 },
+                    { label: 'Light (1,024)', val: 1024 },
+                    { label: 'Balanced (2,048)', val: 2048 },
+                    { label: 'Deep (4,096)', val: 4096 },
+                    { label: 'Thorough (8,192)', val: 8192 },
+                    { label: 'Maximum (16,384)', val: 16384 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.val}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, thinkingBudget: preset.val })}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                        (formData.thinkingBudget ?? 4096) === preset.val
+                          ? 'bg-sky-600 text-white shadow-sm'
+                          : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 

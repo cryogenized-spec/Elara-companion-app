@@ -41,6 +41,9 @@ export const DEFAULT_SETTINGS: ElaraSettings = {
   backdropOpacity: 0.3,
   backdropBlur: 4,
   timezone: 'Africa/Johannesburg',
+  fontSize: 14,
+  textBackground: 'slate',
+  thinkingBudget: 4096,
 };
 
 export function loadSettings(): ElaraSettings {
@@ -48,7 +51,11 @@ export function loadSettings(): ElaraSettings {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const loaded = { ...DEFAULT_SETTINGS, ...parsed };
+    if (!loaded.model || loaded.model.includes('2.5')) {
+      loaded.model = 'gemini-3.7-flash';
+    }
+    return loaded;
   } catch (e) {
     console.error('Failed to load settings from storage:', e);
     return DEFAULT_SETTINGS;

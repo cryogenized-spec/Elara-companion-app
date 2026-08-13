@@ -29,6 +29,17 @@ import {
 } from './lib/memoryStorage';
 import { retrieveRelevantMemories, formatMemoriesForPrompt } from './lib/memoryRetriever';
 import { applyMemoryActions } from './lib/memoryProcessor';
+import {
+  extractThoughtsAndContent,
+  parseThoughtSteps,
+  getActiveThoughtSentence,
+} from './utils/thoughtUtils';
+import {
+  runDirectGeminiStream,
+  runDirectTitleGeneration,
+  runDirectMemoryExtraction,
+  runDirectMemoryMaintenance,
+} from './lib/geminiDirectClient';
 import { Sidebar } from './components/Sidebar';
 import { ChatMessage } from './components/ChatMessage';
 import { MessageComposer } from './components/MessageComposer';
@@ -37,6 +48,7 @@ import { WorldModal } from './components/WorldModal';
 import { MemoryModal } from './components/MemoryModal';
 import { RenameModal } from './components/RenameModal';
 import { DeleteModal } from './components/DeleteModal';
+import { PortraitViewerModal } from './components/PortraitViewerModal';
 import { ElaraPortrait } from './components/ElaraPortrait';
 import { DEFAULT_ELARA_PORTRAIT } from './constants/defaultPortrait';
 import {
@@ -71,6 +83,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [worldModalOpen, setWorldModalOpen] = useState(false);
   const [memoryModalOpen, setMemoryModalOpen] = useState(false);
+  const [viewerModalOpen, setViewerModalOpen] = useState(false);
+  const portraitFileInputRef = useRef<HTMLInputElement>(null);
 
   const [renameTargetId, setRenameTargetId] = useState<string | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
@@ -211,7 +225,8 @@ export default function App() {
   const streamAssistantResponse = async (
     targetConvId: string,
     messageText: string,
-    historyMessages: Message[]
+    historyMessages: Message[],
+    attachedImage?: string
   ) => {
     setIsStreaming(true);
     userHasScrolledUpRef.current = false;
@@ -222,12 +237,21 @@ export default function App() {
 
     // Create Assistant Placeholder Message
     const assistantMsgId = generateUniqueId('msg_ast');
+    const isThinkingInitially = settings.thinkingBudget !== 0;
+    const assistantStartTime = Date.now();
+
     const assistantMsg: Message = {
       id: assistantMsgId,
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
       isStreaming: true,
+      isThinking: isThinkingInitially,
+      thoughts: [],
+      rawThoughts: '',
+      currentThoughtSentence: isThinkingInitially
+        ? 'Activating neural matrices & evaluating context...'
+        : undefined,
     };
 
     // Add assistant message to conversation
@@ -282,110 +306,223 @@ export default function App() {
       ? historyMessages.map((m) => ({
           role: m.role,
           content: m.content,
+          image: m.image,
         }))
       : [];
 
     let accumulatedText = '';
+    let streamedThoughts = '';
+
+    const handleChunkArrival = (chunk: {
+      text?: string;
+      thoughtText?: string;
+      finishReason?: string;
+      safetyRatings?: any;
+    }) => {
+      if (chunk.finishReason === 'SAFETY') {
+        console.warn('[Gemini Safety Cutoff Triggered]', {
+          finishReason: chunk.finishReason,
+          safetyRatings: chunk.safetyRatings,
+        });
+        const cutoffNotice = '\n\n⚠️ *(Response ended early due to API content guardrails)*';
+        if (!accumulatedText.includes('Response ended early due to API content guardrails')) {
+          accumulatedText += cutoffNotice;
+        }
+      } else if (chunk.finishReason === 'MAX_TOKENS') {
+        console.info('[Gemini Max Tokens Reached]', {
+          finishReason: chunk.finishReason,
+        });
+      }
+
+      // Handle streaming thought chunks
+      if (chunk.thoughtText) {
+        streamedThoughts += chunk.thoughtText;
+        const activeSentence = getActiveThoughtSentence(streamedThoughts);
+        const thoughtSteps = parseThoughtSteps(streamedThoughts);
+
+        setConversations((prev) =>
+          prev.map((c) => {
+            if (c.id !== targetConvId) return c;
+            const msgs = c.messages.map((m) =>
+              m.id === assistantMsgId
+                ? {
+                    ...m,
+                    isThinking: true,
+                    rawThoughts: streamedThoughts,
+                    currentThoughtSentence: activeSentence,
+                    thoughts: thoughtSteps,
+                    thoughtDurationMs: Date.now() - assistantStartTime,
+                  }
+                : m
+            );
+            return { ...c, messages: msgs };
+          })
+        );
+        scrollToBottom();
+      }
+
+      // Handle content text chunks
+      if (chunk.text) {
+        accumulatedText += chunk.text;
+      }
+
+      if (chunk.text || chunk.finishReason === 'SAFETY') {
+        const { cleanContent, combinedThoughts, isInsideThoughtTag } =
+          extractThoughtsAndContent(accumulatedText, streamedThoughts);
+        const activeSentence = getActiveThoughtSentence(combinedThoughts);
+        const thoughtSteps = parseThoughtSteps(combinedThoughts);
+
+        const isThinking =
+          isInsideThoughtTag || (cleanContent.length === 0 && Boolean(streamedThoughts));
+
+        setConversations((prev) =>
+          prev.map((c) => {
+            if (c.id !== targetConvId) return c;
+            const msgs = c.messages.map((m) =>
+              m.id === assistantMsgId
+                ? {
+                    ...m,
+                    content: cleanContent,
+                    isThinking: isThinking,
+                    rawThoughts: combinedThoughts,
+                    currentThoughtSentence: activeSentence,
+                    thoughts: thoughtSteps,
+                    thoughtDurationMs: Date.now() - assistantStartTime,
+                  }
+                : m
+            );
+            return { ...c, messages: msgs };
+          })
+        );
+        scrollToBottom();
+      }
+    };
 
     try {
-      const response = await fetch('/api/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          message: messageText,
-          history: historyPayload,
+      // If user configured a direct API Key, run direct client streaming
+      if (settings.apiKey && settings.apiKey.trim()) {
+        await runDirectGeminiStream({
+          apiKey: settings.apiKey.trim(),
+          model: settings.model || 'gemini-3.7-flash',
           systemPrompt: formattedSystemPrompt,
           worldContext: combinedContext,
-          model: settings.model,
+          history: historyPayload,
+          message: messageText,
+          image: attachedImage,
           temperature: settings.temperature,
           maxOutputTokens: settings.maxOutputTokens,
           topP: settings.topP,
           topK: settings.topK,
-        }),
-      });
+          thinkingBudget: settings.thinkingBudget,
+          onChunk: handleChunkArrival,
+          signal: controller.signal,
+        });
+      } else {
+        // Attempt backend endpoint /api/chat/stream
+        let response: Response;
+        try {
+          response = await fetch('/api/chat/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              message: messageText,
+              image: attachedImage,
+              history: historyPayload,
+              systemPrompt: formattedSystemPrompt,
+              worldContext: combinedContext,
+              model: settings.model,
+              temperature: settings.temperature,
+              maxOutputTokens: settings.maxOutputTokens,
+              topP: settings.topP,
+              topK: settings.topK,
+              thinkingBudget: settings.thinkingBudget,
+            }),
+          });
+        } catch (fetchErr: any) {
+          // If network fetch failed (static GitHub Pages hosting without backend)
+          throw new Error(
+            'Cannot reach backend server. If running on GitHub Pages, please enter your Gemini API Key in Settings (Model & API tab).'
+          );
+        }
 
+        if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error(
+              'Backend route not found. If hosting as a static GitHub Page, please enter your Gemini API Key in Settings.'
+            );
+          }
+          const errText = await response.text().catch(() => '');
+          throw new Error(errText || `Server returned HTTP ${response.status}`);
+        }
 
-      if (!response.ok) {
-        throw new Error(`Server returned HTTP ${response.status}`);
-      }
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('Response stream not readable');
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('Response stream not readable');
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-      const decoder = new TextDecoder();
-      let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || '';
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data: ')) {
+              const jsonStr = trimmed.replace('data: ', '');
+              try {
+                const data = JSON.parse(jsonStr);
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('data: ')) {
-            const jsonStr = trimmed.replace('data: ', '');
-            try {
-              const data = JSON.parse(jsonStr);
+                if (data.error) {
+                  throw new Error(data.error);
+                }
 
-              if (data.error) {
-                throw new Error(data.error);
-              }
-
-              if (data.finishReason === 'SAFETY') {
-                console.warn('[Gemini Safety Cutoff Triggered]', {
+                handleChunkArrival({
+                  text: data.text,
+                  thoughtText: data.thoughtText,
                   finishReason: data.finishReason,
                   safetyRatings: data.safetyRatings,
                 });
-                const cutoffNotice = '\n\n⚠️ *(Response ended early due to API content guardrails)*';
-                if (!accumulatedText.includes('Response ended early due to API content guardrails')) {
-                  accumulatedText += cutoffNotice;
+
+                if (data.done) {
+                  break;
                 }
-              } else if (data.finishReason === 'MAX_TOKENS') {
-                console.info('[Gemini Max Tokens Reached]', {
-                  finishReason: data.finishReason,
-                });
-              } else if (data.finishReason && data.finishReason !== 'STOP') {
-                console.info('[Gemini Response Finish Reason]:', data.finishReason, data.safetyRatings);
+              } catch (e: any) {
+                if (e.message && !e.message.includes('JSON')) {
+                  throw e;
+                }
               }
-
-              if (data.text) {
-                accumulatedText += data.text;
-              }
-
-              if (data.text || data.finishReason === 'SAFETY') {
-                // Update assistant message
-                setConversations((prev) =>
-                  prev.map((c) => {
-                    if (c.id !== targetConvId) return c;
-                    const msgs = c.messages.map((m) =>
-                      m.id === assistantMsgId ? { ...m, content: accumulatedText } : m
-                    );
-                    return { ...c, messages: msgs };
-                  })
-                );
-                scrollToBottom();
-              }
-
-              if (data.done) {
-                break;
-              }
-            } catch (e: any) {
-              console.warn('Chunk JSON parse warning:', e);
             }
           }
         }
       }
 
-      // Mark streaming completed
+      // Mark streaming and thinking completed & finalize structured steps
+      const { cleanContent, combinedThoughts } = extractThoughtsAndContent(
+        accumulatedText,
+        streamedThoughts
+      );
+      const finalSteps = parseThoughtSteps(combinedThoughts);
+
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id !== targetConvId) return c;
           const msgs = c.messages.map((m) =>
-            m.id === assistantMsgId ? { ...m, isStreaming: false } : m
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  content: cleanContent,
+                  isStreaming: false,
+                  isThinking: false,
+                  rawThoughts: combinedThoughts,
+                  thoughts: finalSteps,
+                  thoughtDurationMs: Date.now() - assistantStartTime,
+                }
+              : m
           );
           return { ...c, messages: msgs };
         })
@@ -402,27 +539,45 @@ export default function App() {
 
       // Autonomous Background Long-Term Memory Extraction
       if (accumulatedText && accumulatedText.trim()) {
-        fetch('/api/memory/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userMessage: messageText,
-            assistantResponse: accumulatedText,
-            currentMemories: memoryState.memories,
-            userName: settings.userName || 'User',
-          }),
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.actions && Array.isArray(data.actions) && data.actions.length > 0) {
+        if (settings.apiKey && settings.apiKey.trim()) {
+          runDirectMemoryExtraction(
+            settings.apiKey.trim(),
+            messageText,
+            accumulatedText,
+            memoryState.memories,
+            settings.userName || 'User'
+          ).then((actions) => {
+            if (actions && Array.isArray(actions) && actions.length > 0) {
               setMemoryState((prev) => {
-                const updated = applyMemoryActions(prev, data.actions, targetConvId);
+                const updated = applyMemoryActions(prev, actions, targetConvId);
                 saveMemoryState(updated);
                 return updated;
               });
             }
+          });
+        } else {
+          fetch('/api/memory/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userMessage: messageText,
+              assistantResponse: accumulatedText,
+              currentMemories: memoryState.memories,
+              userName: settings.userName || 'User',
+            }),
           })
-          .catch((err) => console.error('Error running background memory extraction:', err));
+            .then((res) => res.json())
+            .then((data) => {
+              if (data.actions && Array.isArray(data.actions) && data.actions.length > 0) {
+                setMemoryState((prev) => {
+                  const updated = applyMemoryActions(prev, data.actions, targetConvId);
+                  saveMemoryState(updated);
+                  return updated;
+                });
+              }
+            })
+            .catch((err) => console.warn('Background memory extraction notice:', err));
+        }
       }
 
     } catch (err: any) {
@@ -430,6 +585,34 @@ export default function App() {
         console.log('Stream generation stopped by user');
       } else {
         console.error('Streaming error:', err);
+        let userFacingError = err?.message || 'Failed to connect to Gemini API.';
+        try {
+          if (userFacingError.includes('{') && userFacingError.includes('}')) {
+            const start = userFacingError.indexOf('{');
+            const end = userFacingError.lastIndexOf('}');
+            const parsed = JSON.parse(userFacingError.slice(start, end + 1));
+            const inner = parsed?.error || parsed;
+            if (inner?.message) {
+              if (typeof inner.message === 'string' && inner.message.includes('{')) {
+                const nestedParsed = JSON.parse(inner.message);
+                userFacingError = nestedParsed?.error?.message || inner.message;
+              } else {
+                userFacingError = inner.message;
+              }
+            }
+          }
+        } catch (_) {}
+
+        // Format clean display error if raw JSON slipped through
+        const currentSelectedModel = settings.model || 'gemini-3.7-flash';
+        if (userFacingError.startsWith('⚠️') || userFacingError.includes('HTTP 429') || userFacingError.includes('HTTP 503')) {
+          // Already properly formatted
+        } else if (userFacingError.includes('Quota exceeded') || userFacingError.includes('429') || userFacingError.includes('RESOURCE_EXHAUSTED')) {
+          userFacingError = `⚠️ API Call Rate Exceeded (HTTP 429): Quota limit reached for [${currentSelectedModel}]. Please wait a moment or manually select a different model.`;
+        } else if (userFacingError.includes('503') || userFacingError.includes('UNAVAILABLE')) {
+          userFacingError = `⚠️ Service Unavailable (HTTP 503): High demand or temporary service interruption for [${currentSelectedModel}]. Please wait a moment or select a different model.`;
+        }
+
         setConversations((prev) =>
           prev.map((c) => {
             if (c.id !== targetConvId) return c;
@@ -439,7 +622,7 @@ export default function App() {
                     ...m,
                     isStreaming: false,
                     isError: true,
-                    errorMessage: err.message || 'Failed to connect to Gemini API.',
+                    errorMessage: userFacingError,
                   }
                 : m
             );
@@ -453,13 +636,27 @@ export default function App() {
     }
   };
 
-  // Generate Title via Server API
+  // Generate Title via Server API or Direct Client
   const generateConversationTitle = async (
     convId: string,
     userMsg: string,
     assistantMsg: string
   ) => {
     try {
+      if (settings.apiKey && settings.apiKey.trim()) {
+        const title = await runDirectTitleGeneration(
+          settings.apiKey.trim(),
+          userMsg,
+          assistantMsg
+        );
+        if (title) {
+          setConversations((prev) =>
+            prev.map((c) => (c.id === convId ? { ...c, title } : c))
+          );
+        }
+        return;
+      }
+
       const res = await fetch('/api/chat/title', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -468,25 +665,27 @@ export default function App() {
           firstAssistantResponse: assistantMsg,
         }),
       });
-      const data = await res.json();
-      if (data.title) {
-        setConversations((prev) =>
-          prev.map((c) => (c.id === convId ? { ...c, title: data.title } : c))
-        );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.title) {
+          setConversations((prev) =>
+            prev.map((c) => (c.id === convId ? { ...c, title: data.title } : c))
+          );
+        }
       }
     } catch (e) {
-      console.error('Failed to generate title:', e);
+      console.warn('Title generation skipped or offline:', e);
     }
   };
 
   // Send Message
-  const handleSendMessage = (text: string) => {
+  const handleSendMessage = (text: string, image?: string) => {
     let currentConvId = activeId;
 
     if (!currentConvId) {
       const newConv: Conversation = {
         id: generateUniqueId('conv'),
-        title: 'New Conversation',
+        title: text.slice(0, 30) || (image ? 'Image Attachment' : 'New Conversation'),
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messages: [],
@@ -503,6 +702,7 @@ export default function App() {
       id: generateUniqueId('msg_usr'),
       role: 'user',
       content: text,
+      image: image,
       timestamp: Date.now(),
     };
 
@@ -518,8 +718,8 @@ export default function App() {
       })
     );
 
-    // Trigger Stream
-    streamAssistantResponse(currentConvId, text, existingMessages);
+    // Trigger Stream with image
+    streamAssistantResponse(currentConvId, text, existingMessages, image);
   };
 
   // Regenerate Response
@@ -539,7 +739,9 @@ export default function App() {
 
     if (lastUserIndex === -1) return;
 
-    const userMsgText = msgs[lastUserIndex].content;
+    const lastUserMsg = msgs[lastUserIndex];
+    const userMsgText = lastUserMsg.content;
+    const userMsgImage = lastUserMsg.image;
     const historyMsgs = msgs.slice(0, lastUserIndex);
 
     // Truncate messages after last user message
@@ -551,7 +753,7 @@ export default function App() {
       )
     );
 
-    streamAssistantResponse(activeConversation.id, userMsgText, historyMsgs);
+    streamAssistantResponse(activeConversation.id, userMsgText, historyMsgs, userMsgImage);
   };
 
   // Edit and Resend User Message
@@ -563,8 +765,9 @@ export default function App() {
     if (targetIndex === -1) return;
 
     const historyMsgs = msgs.slice(0, targetIndex);
+    const targetMsg = msgs[targetIndex];
     const updatedUserMsg: Message = {
-      ...msgs[targetIndex],
+      ...targetMsg,
       content: newContent,
       timestamp: Date.now(),
     };
@@ -577,7 +780,7 @@ export default function App() {
       )
     );
 
-    streamAssistantResponse(activeConversation.id, newContent, historyMsgs);
+    streamAssistantResponse(activeConversation.id, newContent, historyMsgs, targetMsg.image);
   };
 
   // Complete / Continue Last Response
@@ -750,88 +953,123 @@ export default function App() {
             </div>
           </header>
 
-          {/* Mobile Elara Portrait Banner / Compact Profile */}
-          <div className="lg:hidden bg-zinc-950/80 border-b border-zinc-800/80 px-4 py-2 flex items-center justify-between relative z-10">
-            <div className="flex items-center space-x-2.5">
-              <div
-                style={{
-                  width: `${Math.round(36 * (settings.portraitScale ?? 1.0))}px`,
-                  height: `${Math.round(45 * (settings.portraitScale ?? 1.0))}px`,
-                }}
-                className="aspect-[4/5] rounded-lg overflow-hidden border border-sky-500/30 shrink-0 bg-zinc-900 transition-all duration-200"
-              >
-                <img
-                  src={activePortrait}
-                  alt="Elara Portrait"
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-zinc-200 truncate">Elara Consort</p>
-                <p className="text-[10px] text-zinc-400 truncate">Cybernetic Companion • Mk III</p>
-              </div>
-            </div>
-          </div>
+          {/* Solo Free-Floating Lone Portrait in Top Left Corner */}
+          {(() => {
+            const portraitWidth = Math.min(
+              Math.max(Math.round(52 * (settings.portraitScale ?? 1.0)), 38),
+              220
+            );
+            const portraitHeight = Math.min(
+              Math.max(Math.round(65 * (settings.portraitScale ?? 1.0)), 48),
+              275
+            );
+            const portraitLeft = 12; // 12px from left edge
+            const tinySpace = 8; // minimal gap between portrait and text card
+            const chatPaddingLeft = portraitLeft + portraitWidth + tinySpace;
 
-          {/* Message Feed Area */}
-          <div
-            ref={scrollContainerRef}
-            onScroll={handleScroll}
-            className="flex-1 overflow-y-auto space-y-4 p-4 md:p-6 select-text custom-scrollbar relative z-10"
-          >
-            {!activeConversation || activeConversation.messages.length === 0 ? (
-              /* Empty State Greeting */
-              <div className="h-full flex flex-col items-center justify-center p-6 text-center max-w-xl mx-auto">
-                <div className="w-16 h-16 rounded-3xl bg-zinc-900/90 border border-zinc-800 flex items-center justify-center text-sky-400 shadow-xl mb-5 backdrop-blur-sm">
-                  <Sparkles className="w-8 h-8" />
+            return (
+              <>
+                <div
+                  className="absolute top-20 z-20 pointer-events-auto transition-all duration-200"
+                  style={{
+                    left: `${portraitLeft}px`,
+                    width: `${portraitWidth}px`,
+                    height: `${portraitHeight}px`,
+                  }}
+                >
+                  <div
+                    onClick={() => setViewerModalOpen(true)}
+                    title="Elara Consort — Click to view / change portrait"
+                    className="w-full h-full rounded-2xl overflow-hidden border border-sky-500/40 shadow-2xl bg-zinc-950/80 backdrop-blur-md hover:border-sky-400 hover:scale-105 active:scale-95 transition-all cursor-pointer group relative ring-1 ring-sky-500/20"
+                  >
+                    <img
+                      src={activePortrait}
+                      alt="Elara Portrait"
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-1">
+                      <span className="text-[9px] font-semibold text-sky-200 tracking-wide drop-shadow">Elara</span>
+                    </div>
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400 border border-black/80 shadow-sm animate-pulse" />
+                  </div>
                 </div>
 
-                <h2 className="text-xl font-semibold text-zinc-100 tracking-tight mb-2">
-                  Elara — Cybernetic Consort
-                </h2>
+                {/* Message Feed Area */}
+                <div
+                  ref={scrollContainerRef}
+                  onScroll={handleScroll}
+                  className="flex-1 overflow-y-auto space-y-3 pt-3 pb-6 pr-2.5 sm:pr-4 select-text custom-scrollbar relative z-10 transition-all"
+                  style={{
+                    paddingLeft: `${chatPaddingLeft}px`,
+                  }}
+                >
+                  {!activeConversation || activeConversation.messages.length === 0 ? (
+                    /* Empty State Greeting */
+                    <div className="h-full flex flex-col items-center justify-center p-4 text-center max-w-xl mx-auto">
+                      <div className="w-16 h-16 rounded-3xl bg-zinc-900/90 border border-zinc-800 flex items-center justify-center text-sky-400 shadow-xl mb-5 backdrop-blur-sm">
+                        <Sparkles className="w-8 h-8" />
+                      </div>
 
-                <p className="text-sm text-zinc-400 leading-relaxed mb-8">
-                  Autonomous, composed, and attentive. Elara remains your steadfast consort across technical, practical, domestic, and personal roleplay.
-                </p>
+                      <h2 className="text-xl font-semibold text-zinc-100 tracking-tight mb-2">
+                        Elara — Cybernetic Consort
+                      </h2>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full text-left">
-                  {[
-                    'What are you working on right now?',
-                    'Come sit with me for a bit.',
-                    'What should we do this evening?',
-                    'Help me solve this tricky problem.',
-                  ].map((suggestion, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleSendMessage(suggestion)}
-                      className="p-3.5 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-zinc-100 transition-all text-left shadow-sm backdrop-blur-sm"
-                    >
-                      "{suggestion}"
-                    </button>
-                  ))}
+                      <p className="text-sm text-zinc-400 leading-relaxed mb-8">
+                        Autonomous, composed, and attentive. Elara remains your steadfast consort across technical, practical, domestic, and personal roleplay.
+                      </p>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full text-left">
+                        {[
+                          'What are you working on right now?',
+                          'Come sit with me for a bit.',
+                          'What should we do this evening?',
+                          'Help me solve this tricky problem.',
+                        ].map((suggestion, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => handleSendMessage(suggestion)}
+                            className="p-3.5 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-zinc-100 transition-all text-left shadow-sm backdrop-blur-sm"
+                          >
+                            "{suggestion}"
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    /* Messages List */
+                    (() => {
+                      const lastUserMessage = [...activeConversation.messages]
+                        .reverse()
+                        .find((m) => m.role === 'user');
+                      const lastUserMessageId = lastUserMessage?.id;
+
+                      return activeConversation.messages.map((msg, index) => {
+                        const isLast = index === activeConversation.messages.length - 1;
+                        return (
+                          <ChatMessage
+                            key={`${msg.id || 'msg'}_${index}`}
+                            message={msg}
+                            isLast={isLast}
+                            isStreaming={isStreaming && isLast && msg.role === 'assistant'}
+                            portraitImage={activePortrait}
+                            fontSize={settings.fontSize ?? 14}
+                            textBackground={settings.textBackground ?? 'slate'}
+                            isLastUserMessage={msg.id === lastUserMessageId}
+                            onRegenerate={handleRegenerate}
+                            onEditAndResend={handleEditAndResend}
+                            onRetry={handleRetry}
+                            onCompleteResponse={handleCompleteResponse}
+                            onOpenSettings={() => setSettingsOpen(true)}
+                          />
+                        );
+                      });
+                    })()
+                  )}
+                  <div ref={messagesEndRef} />
                 </div>
-              </div>
-            ) : (
-              /* Messages List */
-              activeConversation.messages.map((msg, index) => {
-                const isLast = index === activeConversation.messages.length - 1;
-                return (
-                  <ChatMessage
-                    key={`${msg.id || 'msg'}_${index}`}
-                    message={msg}
-                    isLast={isLast}
-                    isStreaming={isStreaming && isLast && msg.role === 'assistant'}
-                    portraitImage={activePortrait}
-                    onRegenerate={handleRegenerate}
-                    onEditAndResend={handleEditAndResend}
-                    onRetry={handleRetry}
-                    onCompleteResponse={handleCompleteResponse}
-                  />
-                );
-              })
-            )}
-            <div ref={messagesEndRef} />
-          </div>
+              </>
+            );
+          })()}
 
           {/* Composer Input Bar */}
           <div className="relative z-10">
@@ -897,6 +1135,7 @@ export default function App() {
           saveMemoryState(imp);
         }}
         userName={settings.userName || 'User'}
+        apiKey={settings.apiKey}
       />
 
       <WorldModal
@@ -932,6 +1171,37 @@ export default function App() {
         onExportAllData={handleExportAll}
         onImportData={handleImportData}
         onClearAllData={handleClearAllData}
+      />
+
+      {/* Hidden file input for uploading portrait from viewer modal */}
+      <input
+        ref={portraitFileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              const res = event.target?.result as string;
+              if (res) {
+                handleUploadPortrait(res);
+              }
+            };
+            reader.readAsDataURL(file);
+          }
+          e.target.value = '';
+        }}
+        className="hidden"
+      />
+
+      <PortraitViewerModal
+        isOpen={viewerModalOpen}
+        imageSrc={activePortrait}
+        onClose={() => setViewerModalOpen(false)}
+        onUploadNew={() => portraitFileInputRef.current?.click()}
+        onRemoveCustom={customPortrait ? handleRemovePortrait : undefined}
+        hasCustomImage={!!customPortrait}
       />
 
       <RenameModal

@@ -7,7 +7,17 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '25mb' }));
+
+  // Helper to parse base64 Data URL into inlineData part
+  function parseDataUrl(dataUrl: string) {
+    if (!dataUrl || typeof dataUrl !== 'string') return null;
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      return { mimeType: match[1], data: match[2] };
+    }
+    return null;
+  }
 
   // Helper to get initialized Gemini client
   function getGeminiClient() {
@@ -25,15 +35,126 @@ async function startServer() {
     });
   }
 
-  // Helper to normalize Gemini model string (stripping 'models/' prefix if present)
+  // Helper to format clean, descriptive error details with exact model ID
+  function formatApiErrorDetails(err: any, modelId: string): { code?: number | string; status?: string; message: string; modelId: string } {
+    let code = err?.status || err?.code || 500;
+    let status = err?.status || '';
+    let rawMsg = err?.message || (typeof err === 'string' ? err : '');
+
+    try {
+      if (rawMsg.includes('{') && rawMsg.includes('}')) {
+        const jsonStart = rawMsg.indexOf('{');
+        const jsonEnd = rawMsg.lastIndexOf('}');
+        const candidateJson = rawMsg.slice(jsonStart, jsonEnd + 1);
+        const parsed = JSON.parse(candidateJson);
+        const inner = parsed?.error || parsed;
+        if (inner) {
+          if (inner.code) code = inner.code;
+          if (inner.status) status = inner.status;
+          if (inner.message) {
+            if (typeof inner.message === 'string' && inner.message.trim().startsWith('{')) {
+              try {
+                const subParsed = JSON.parse(inner.message);
+                if (subParsed?.error?.message) {
+                  rawMsg = subParsed.error.message;
+                  if (subParsed.error.code) code = subParsed.error.code;
+                  if (subParsed.error.status) status = subParsed.error.status;
+                }
+              } catch (_) {}
+            } else {
+              rawMsg = inner.message;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    const lower = String(rawMsg).toLowerCase();
+
+    // Rate Limit / Quota Exceeded (429)
+    if (
+      code === 429 ||
+      String(code) === '429' ||
+      status === 'RESOURCE_EXHAUSTED' ||
+      lower.includes('429') ||
+      lower.includes('quota exceeded') ||
+      lower.includes('resource_exhausted')
+    ) {
+      return {
+        code: 429,
+        status: 'RESOURCE_EXHAUSTED',
+        modelId,
+        message: `⚠️ API Call Rate Exceeded (HTTP 429): Quota limit reached for [${modelId}]. Please wait a moment or manually select a different model.`,
+      };
+    }
+
+    // Service Unavailable / Overloaded (503)
+    if (
+      code === 503 ||
+      String(code) === '503' ||
+      status === 'UNAVAILABLE' ||
+      lower.includes('503') ||
+      lower.includes('unavailable') ||
+      lower.includes('overloaded')
+    ) {
+      return {
+        code: 503,
+        status: 'UNAVAILABLE',
+        modelId,
+        message: `⚠️ Service Unavailable (HTTP 503): High demand or temporary service interruption for [${modelId}]. Please wait a moment or select a different model.`,
+      };
+    }
+
+    // Context Window Exceeded
+    if (lower.includes('context') || lower.includes('token count') || lower.includes('max_tokens') || lower.includes('too large')) {
+      return {
+        code: 400,
+        status: 'CONTEXT_LENGTH_EXCEEDED',
+        modelId,
+        message: `⚠️ Context Window Exceeded: The conversation history exceeds the maximum context capacity of [${modelId}]. Consider clearing or summarizing previous messages.`,
+      };
+    }
+
+    // Model not found or invalid
+    if (code === 404 || String(code) === '404' || status === 'NOT_FOUND' || lower.includes('not found')) {
+      return {
+        code: 404,
+        status: 'NOT_FOUND',
+        modelId,
+        message: `⚠️ Model Not Found (HTTP 404): The requested model [${modelId}] is unavailable in this region or project. Please select a different model in Settings.`,
+      };
+    }
+
+    // Clean single line message
+    const cleanLine = rawMsg.split('\n')[0].replace(/[\{\}]/g, '').trim();
+    return {
+      code,
+      status: String(status || 'ERROR'),
+      modelId,
+      message: `⚠️ API Error (${code}): ${cleanLine || 'Communication error with Gemini API'} for [${modelId}]. Please check your configuration or select a different model.`,
+    };
+  }
+
+  // Helper to normalize Gemini model string
   function normalizeModelName(rawModel?: string): string {
     if (!rawModel || typeof rawModel !== 'string') {
       return 'gemini-3.7-flash';
     }
-    let clean = rawModel.trim().replace(/^["']|["']$/g, '');
-    if (clean.startsWith('models/')) {
-      clean = clean.slice(7);
+    let clean = rawModel.trim();
+    // Remove wrapping quotes or backticks
+    clean = clean.replace(/^["'`]|["'`]$/g, '').trim();
+    // Strip leading 'models/' or '/models/' repeatedly
+    clean = clean.replace(/^(\/?models\/)+/gi, '').trim();
+
+    if (clean === 'gemini-3.1-pro') {
+      return 'gemini-3.1-pro-preview';
     }
+    if (clean === 'gemini-3-flash') {
+      return 'gemini-3-flash-preview';
+    }
+
+    // Sanitize remaining characters
+    clean = clean.replace(/[^a-zA-Z0-9\.\-_]/g, '');
     return clean || 'gemini-3.7-flash';
   }
 
@@ -45,32 +166,144 @@ async function startServer() {
     });
   });
 
+  // Dynamic models endpoint with strict filtering (no 2.5, no media/image/tts/video)
+  app.get('/api/models', async (req, res) => {
+    const seedModels = [
+      {
+        id: 'gemini-3.7-flash',
+        name: 'Gemini 3.7 Flash',
+        description: 'Latest flagship Flash - High-speed reasoning & agentic execution.',
+        isDefault: true,
+      },
+      {
+        id: 'gemini-3.6-flash',
+        name: 'Gemini 3.6 Flash',
+        description: 'Balanced performance & high speed.',
+      },
+      {
+        id: 'gemini-3.5-flash',
+        name: 'Gemini 3.5 Flash',
+        description: 'Standard text generation workhorse.',
+      },
+      {
+        id: 'gemini-3.5-flash-lite',
+        name: 'Gemini 3.5 Flash Lite',
+        description: 'Ultra-low latency, high throughput.',
+      },
+      {
+        id: 'gemini-3.1-pro',
+        name: 'Gemini 3.1 Pro',
+        description: 'Advanced reasoning, deep logic, and complex tasks.',
+      },
+      {
+        id: 'gemini-3.1-flash-lite',
+        name: 'Gemini 3.1 Flash Lite',
+        description: 'Lightweight text execution.',
+      },
+      {
+        id: 'gemini-3-flash',
+        name: 'Gemini 3 Flash',
+        description: 'Frontier performance text engine.',
+      },
+      {
+        id: 'gemini-pro-latest',
+        name: 'Gemini Pro Latest (Alias)',
+        description: 'Points dynamically to the current stable Pro text model.',
+      },
+      {
+        id: 'gemini-flash-latest',
+        name: 'Gemini Flash Latest (Alias)',
+        description: 'Points dynamically to the current stable Flash text model.',
+      },
+      {
+        id: 'gemini-flash-lite-latest',
+        name: 'Gemini Flash-Lite Latest (Alias)',
+        description: 'Points dynamically to the current stable Flash-Lite text model.',
+      },
+    ];
+
+    try {
+      const ai = getGeminiClient();
+      const list = await ai.models.list();
+      const dynamicModels: any[] = [];
+
+      for await (const m of list) {
+        const rawName = (m.name || '').replace(/^models\//, '');
+        const lower = rawName.toLowerCase();
+
+        // STRICT FILTER 1: Exclude all 2.5 series models
+        if (lower.includes('2.5')) continue;
+
+        // STRICT FILTER 2: Exclude media/image/TTS/video models
+        const bannedKeywords = [
+          'image', 'veo', 'live', 'tts', 'audio', 'imagen', 'embed',
+          'lyria', 'banana', 'aqa', 'robotics', 'antigravity',
+          'deep-research', 'computer-use'
+        ];
+        if (bannedKeywords.some((keyword) => lower.includes(keyword))) continue;
+
+        // Check supported generation methods if present
+        const supported = (m as any).supportedActions || (m as any).supportedGenerationMethods;
+        if (Array.isArray(supported) && supported.length > 0) {
+          if (!supported.includes('generateContent') && !supported.includes('streamGenerateContent')) {
+            continue;
+          }
+        }
+
+        dynamicModels.push({
+          id: rawName,
+          name: m.displayName || rawName,
+          description: m.description || 'Dynamic text-generation model from Gemini API.',
+        });
+      }
+
+      const mergedMap = new Map<string, any>();
+      for (const seed of seedModels) {
+        mergedMap.set(seed.id, seed);
+      }
+      for (const dyn of dynamicModels) {
+        if (!mergedMap.has(dyn.id)) {
+          mergedMap.set(dyn.id, dyn);
+        }
+      }
+
+      res.json({ models: Array.from(mergedMap.values()) });
+    } catch (err) {
+      console.warn('Error querying Gemini models list, returning seed list:', err);
+      res.json({ models: seedModels });
+    }
+  });
+
   // API Chat Streaming endpoint
   app.post('/api/chat/stream', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    try {
-      const {
-        message,
-        history = [],
-        systemPrompt,
-        worldContext,
-        model,
-        temperature,
-        maxOutputTokens,
-        topP,
-        topK,
-      } = req.body;
+    const {
+      message,
+      image,
+      history = [],
+      systemPrompt,
+      worldContext,
+      model,
+      temperature,
+      maxOutputTokens,
+      topP,
+      topK,
+      thinkingBudget,
+    } = req.body;
 
-      if (!message && history.length === 0) {
-        res.write(`data: ${JSON.stringify({ error: 'Message content is required.' })}\n\n`);
+    const requestedModelStr = (typeof model === 'string' && model.trim()) ? model.trim() : (process.env.GEMINI_MODEL || 'gemini-3.7-flash');
+    const selectedModel = normalizeModelName(requestedModelStr);
+
+    try {
+      if (!message && !image && history.length === 0) {
+        res.write(`data: ${JSON.stringify({ error: 'Message or image content is required.' })}\n\n`);
         return res.end();
       }
 
       const ai = getGeminiClient();
-      const selectedModel = normalizeModelName(model || process.env.GEMINI_MODEL || 'gemini-3.7-flash');
 
       // Build contents array for Gemini
       const contents: any[] = [];
@@ -78,19 +311,55 @@ async function startServer() {
       if (Array.isArray(history) && history.length > 0) {
         for (const msg of history) {
           if (msg.role === 'user' || msg.role === 'assistant') {
-            contents.push({
-              role: msg.role === 'assistant' ? 'model' : 'user',
-              parts: [{ text: msg.content }],
-            });
+            const parts: any[] = [];
+            if (msg.image) {
+              const parsedHistoryImg = parseDataUrl(msg.image);
+              if (parsedHistoryImg) {
+                parts.push({
+                  inlineData: {
+                    mimeType: parsedHistoryImg.mimeType,
+                    data: parsedHistoryImg.data,
+                  },
+                });
+              }
+            }
+            if (msg.content) {
+              parts.push({ text: msg.content });
+            } else if (parts.length > 0) {
+              parts.push({ text: '[Attached image]' });
+            }
+            if (parts.length > 0) {
+              contents.push({
+                role: msg.role === 'assistant' ? 'model' : 'user',
+                parts,
+              });
+            }
           }
         }
       }
 
-      // Append latest message if provided
-      if (message) {
+      // Append latest message/image if provided
+      if (message || image) {
+        const latestParts: any[] = [];
+        if (image) {
+          const parsedImg = parseDataUrl(image);
+          if (parsedImg) {
+            latestParts.push({
+              inlineData: {
+                mimeType: parsedImg.mimeType,
+                data: parsedImg.data,
+              },
+            });
+          }
+        }
+        if (message) {
+          latestParts.push({ text: message });
+        } else {
+          latestParts.push({ text: 'Please look at this image and share your thoughts as Elara.' });
+        }
         contents.push({
           role: 'user',
-          parts: [{ text: message }],
+          parts: latestParts,
         });
       }
 
@@ -130,7 +399,15 @@ async function startServer() {
       if (typeof topK === 'number') {
         config.topK = topK;
       }
+      if (typeof thinkingBudget === 'number') {
+        if (thinkingBudget === 0) {
+          config.thinkingConfig = { thinkingBudget: 0 };
+        } else if (thinkingBudget > 0) {
+          config.thinkingConfig = { thinkingBudget };
+        }
+      }
 
+      // STRICT NO-SILENT-FALLBACK: Directly execute requested model
       const responseStream = await ai.models.generateContentStream({
         model: selectedModel,
         contents,
@@ -139,7 +416,6 @@ async function startServer() {
 
       for await (const chunk of responseStream) {
         const candidate = chunk.candidates?.[0];
-        const text = chunk.text;
         const finishReason = candidate?.finishReason;
         const safetyRatings = candidate?.safetyRatings;
 
@@ -150,8 +426,17 @@ async function startServer() {
           });
         }
 
-        if (text) {
-          res.write(`data: ${JSON.stringify({ text, finishReason, safetyRatings })}\n\n`);
+        const parts = candidate?.content?.parts;
+        if (parts && parts.length > 0) {
+          for (const part of parts) {
+            if ((part as any).thought) {
+              res.write(`data: ${JSON.stringify({ thoughtText: part.text })}\n\n`);
+            } else if (part.text) {
+              res.write(`data: ${JSON.stringify({ text: part.text, finishReason, safetyRatings })}\n\n`);
+            }
+          }
+        } else if (chunk.text) {
+          res.write(`data: ${JSON.stringify({ text: chunk.text, finishReason, safetyRatings })}\n\n`);
         } else if (finishReason) {
           res.write(`data: ${JSON.stringify({ finishReason, safetyRatings })}\n\n`);
         }
@@ -160,10 +445,9 @@ async function startServer() {
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
     } catch (err: any) {
-      console.error('Error in /api/chat/stream:', err);
-      const errorMessage =
-        err?.message || 'An error occurred while communicating with the Gemini API.';
-      res.write(`data: ${JSON.stringify({ error: errorMessage })}\n\n`);
+      console.error(`Error in /api/chat/stream on model [${selectedModel}]:`, err);
+      const errorDetails = formatApiErrorDetails(err, requestedModelStr);
+      res.write(`data: ${JSON.stringify({ error: errorDetails.message, errorDetails })}\n\n`);
       res.end();
     }
   });
@@ -172,39 +456,47 @@ async function startServer() {
   app.post('/api/chat/title', async (req, res) => {
     try {
       const { firstUserMessage, firstAssistantResponse } = req.body;
-      if (!firstUserMessage) {
+      if (!firstUserMessage || typeof firstUserMessage !== 'string') {
         return res.json({ title: 'New Conversation' });
       }
 
-      const ai = getGeminiClient();
-      const model = normalizeModelName(process.env.GEMINI_MODEL || 'gemini-3.7-flash');
+      // Generate instant heuristic title fallback from user's message
+      const sanitizedUserText = firstUserMessage.trim().replace(/[#*`_>\[\]]/g, '').trim();
+      const words = sanitizedUserText.split(/\s+/).filter(Boolean).slice(0, 5);
+      const fallbackTitle = words.length > 0
+        ? words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+        : 'New Conversation';
 
-      const prompt = `Generate a concise, natural conversation title (maximum 4 to 6 words, no quotes, no title prefix) summarizing this chat topic:
-User: ${firstUserMessage}
-${firstAssistantResponse ? `Assistant: ${firstAssistantResponse.slice(0, 200)}` : ''}`;
+      const candidateModels = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash'];
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          temperature: 0.5,
-          maxOutputTokens: 25,
-          safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
-          ],
-        },
-      });
+      for (const modelToTry of candidateModels) {
+        try {
+          const ai = getGeminiClient();
+          const prompt = `Generate a concise conversation title (maximum 4 to 6 words, no quotes, no title prefix) for this conversation:
+User: ${sanitizedUserText}
+${firstAssistantResponse ? `Assistant: ${String(firstAssistantResponse).slice(0, 150)}` : ''}`;
 
-      const rawTitle = response.text?.trim().replace(/^["']|["']$/g, '') || '';
-      const cleanTitle = rawTitle.slice(0, 50) || 'New Conversation';
+          const response = await ai.models.generateContent({
+            model: modelToTry,
+            contents: prompt,
+            config: {
+              temperature: 0.4,
+              maxOutputTokens: 25,
+            },
+          });
 
-      res.json({ title: cleanTitle });
+          const rawTitle = response.text?.trim().replace(/^["']|["']$/g, '').trim() || '';
+          const cleanTitle = rawTitle.slice(0, 45) || fallbackTitle;
+
+          return res.json({ title: cleanTitle });
+        } catch (genErr) {
+          // Continue to next fallback model
+          continue;
+        }
+      }
+
+      return res.json({ title: fallbackTitle });
     } catch (e) {
-      console.error('Error generating title:', e);
       res.json({ title: 'New Conversation' });
     }
   });
@@ -217,9 +509,6 @@ ${firstAssistantResponse ? `Assistant: ${firstAssistantResponse.slice(0, 200)}` 
       if (!userMessage && !assistantResponse) {
         return res.json({ actions: [] });
       }
-
-      const ai = getGeminiClient();
-      const model = normalizeModelName(process.env.GEMINI_MODEL || 'gemini-3.7-flash');
 
       const existingMemoriesSummary = Array.isArray(currentMemories) && currentMemories.length > 0
         ? currentMemories.slice(0, 30).map((m: any) => `[ID: ${m.id}] [Category: ${m.category}] [Confidence: ${m.confidence}] "${m.content}"`).join('\n')
@@ -260,29 +549,39 @@ INSTRUCTIONS & RULES:
   ]
 }`;
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          temperature: 0.2,
-          maxOutputTokens: 1000,
-          responseMimeType: 'application/json',
-          safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
-          ],
-        },
-      });
+      const ai = getGeminiClient();
+      const candidateModels = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash'];
 
-      const responseText = response.text || '{"actions":[]}';
-      const parsed = JSON.parse(responseText);
+      for (const modelToTry of candidateModels) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelToTry,
+            contents: prompt,
+            config: {
+              temperature: 0.2,
+              maxOutputTokens: 1000,
+              responseMimeType: 'application/json',
+              safetySettings: [
+                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
+              ],
+            },
+          });
 
-      res.json(parsed);
+          const responseText = response.text || '{"actions":[]}';
+          const parsed = JSON.parse(responseText);
+          return res.json(parsed);
+        } catch (subErr) {
+          continue;
+        }
+      }
+
+      return res.json({ actions: [] });
     } catch (e: any) {
-      console.error('Error analyzing memory:', e);
+      console.warn('Memory analysis handled error:', e);
       res.json({ actions: [], error: e?.message });
     }
   });
@@ -295,9 +594,6 @@ INSTRUCTIONS & RULES:
       if (!Array.isArray(memories) || memories.length === 0) {
         return res.json({ actions: [], summary: 'No memories to maintain.' });
       }
-
-      const ai = getGeminiClient();
-      const model = normalizeModelName(process.env.GEMINI_MODEL || 'gemini-3.7-flash');
 
       const memoryListText = memories.map((m: any) =>
         `[ID: ${m.id}] [Category: ${m.category}] [Imp: ${m.importance}] [Conf: ${m.confidence}] "${m.content}"`
@@ -333,27 +629,38 @@ Return a JSON payload listing proposed actions to clean and consolidate her note
   ]
 }`;
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          temperature: 0.1,
-          maxOutputTokens: 1500,
-          responseMimeType: 'application/json',
-          safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
-          ],
-        },
-      });
+      const ai = getGeminiClient();
+      const candidateModels = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash'];
 
-      const parsed = JSON.parse(response.text || '{"actions":[],"summary":"No changes"}');
-      res.json(parsed);
+      for (const modelToTry of candidateModels) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelToTry,
+            contents: prompt,
+            config: {
+              temperature: 0.1,
+              maxOutputTokens: 1500,
+              responseMimeType: 'application/json',
+              safetySettings: [
+                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
+              ],
+            },
+          });
+
+          const parsed = JSON.parse(response.text || '{"actions":[],"summary":"No changes"}');
+          return res.json(parsed);
+        } catch (subErr) {
+          continue;
+        }
+      }
+
+      res.json({ actions: [], summary: 'No changes' });
     } catch (e: any) {
-      console.error('Error during memory maintenance:', e);
+      console.warn('Memory maintenance handled error:', e);
       res.json({ actions: [], summary: 'Maintenance error', error: e?.message });
     }
   });
