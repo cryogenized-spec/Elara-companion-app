@@ -155,10 +155,10 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
             className="w-full bg-transparent text-zinc-100 px-2 py-1.5 focus:outline-none transition-all resize-none min-h-[56px] max-h-48 placeholder-zinc-500 text-sm leading-relaxed"
           />
 
-          <div className="flex items-center justify-between pt-1 border-t border-zinc-800/60 mt-1 px-1 gap-2">
-            <div className="flex min-w-0 items-center gap-1.5 overflow-visible">
+          <div className="flex items-center justify-between pt-1 border-t border-zinc-800/60 mt-1 px-1 gap-3">
+            <div className="flex shrink-0 min-w-0 items-center gap-2 overflow-visible">
               <ChatModelControls compact />
-              <span className="hidden sm:inline text-[10px] text-zinc-500 font-mono truncate">Shift + Enter for new line</span>
+              <span className="hidden lg:inline text-[10px] text-zinc-500 font-mono truncate">Shift + Enter for new line</span>
             </div>
 
             <div className="flex items-center gap-2 relative shrink-0" ref={menuRef}>
