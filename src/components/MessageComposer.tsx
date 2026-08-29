@@ -155,13 +155,13 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
             className="w-full bg-transparent text-zinc-100 px-2 py-1.5 focus:outline-none transition-all resize-none min-h-[56px] max-h-48 placeholder-zinc-500 text-sm leading-relaxed"
           />
 
-          <div className="flex items-center justify-between pt-1 border-t border-zinc-800/60 mt-1 px-1 gap-3">
-            <div className="flex shrink-0 min-w-0 items-center gap-2 overflow-visible">
-              <ChatModelControls compact />
-              <span className="hidden lg:inline text-[10px] text-zinc-500 font-mono truncate">Shift + Enter for new line</span>
+          <div className="flex min-w-0 items-center justify-between gap-3 pt-1 border-t border-zinc-800/60 mt-1 px-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <ChatModelControls />
+              <span className="hidden lg:inline min-w-0 truncate text-[10px] text-zinc-500 font-mono">Shift + Enter for new line</span>
             </div>
 
-            <div className="flex items-center gap-2 relative shrink-0" ref={menuRef}>
+            <div className="flex shrink-0 items-center gap-2 relative" ref={menuRef}>
               <div className="relative">
                 <button type="button" onClick={() => setIsMenuOpen((prev) => !prev)} disabled={isStreaming || disabled} className={`p-2 rounded-xl transition-all ${isMenuOpen || attachedImage ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80 border border-transparent'}`} title="Attach image from gallery or take camera photo">
                   <Paperclip className="w-4 h-4" />
