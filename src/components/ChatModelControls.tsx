@@ -5,7 +5,11 @@ import { AVAILABLE_MODELS } from '../types';
 import { loadSettings, saveSettings } from '../lib/storage';
 import { runGeminiMinimalProbe, type GeminiMinimalProbeResult } from '../lib/geminiMinimalProbe';
 
-export const ChatModelControls: React.FC = () => {
+interface ChatModelControlsProps {
+  compact?: boolean;
+}
+
+export const ChatModelControls: React.FC<ChatModelControlsProps> = ({ compact = false }) => {
   const [settings, setSettings] = useState<ElaraSettings>(() => loadSettings());
   const [open, setOpen] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -24,8 +28,9 @@ export const ChatModelControls: React.FC = () => {
     return configured.filter((value, index, list) => list.findIndex((item) => item.toLowerCase() === value.toLowerCase()) === index);
   }, [settings.model, settings.reliabilitySettings?.fallbackModels]);
 
-  const current = AVAILABLE_MODELS.find((item) => item.id.toLowerCase() === settings.model.trim().toLowerCase());
-  const currentLabel = current?.name || `${settings.model} (unavailable)`;
+  const selectedId = settings.model?.trim() || 'gemini-3.7-flash';
+  const current = AVAILABLE_MODELS.find((item) => item.id.toLowerCase() === selectedId.toLowerCase());
+  const currentLabel = current?.name || `${selectedId} (unavailable)`;
 
   const selectModel = (model: string) => {
     const next = { ...settings, model };
@@ -38,7 +43,7 @@ export const ChatModelControls: React.FC = () => {
     if (testing) return;
     setTesting(true);
     try {
-      setProbe(await runGeminiMinimalProbe(settings.apiKey || '', settings.model || 'gemini-3.7-flash'));
+      setProbe(await runGeminiMinimalProbe(settings.apiKey || '', selectedId));
     } finally {
       setTesting(false);
     }
@@ -73,46 +78,44 @@ export const ChatModelControls: React.FC = () => {
   };
 
   return (
-    <div className="fixed bottom-[5.75rem] left-1/2 z-[80] flex w-[min(42rem,calc(100vw-1rem))] -translate-x-1/2 items-center justify-end gap-1.5 pointer-events-none">
-      <div className="pointer-events-auto flex items-center gap-1.5 rounded-2xl border border-zinc-800/90 bg-[#0a0a0a]/95 p-1 shadow-2xl backdrop-blur-xl">
-        <div className="relative">
-          <button
-            type="button"
-            aria-haspopup="listbox"
-            aria-expanded={open}
-            aria-label={`Selected model: ${currentLabel}`}
-            onClick={() => setOpen((value) => !value)}
-            className="inline-flex h-9 max-w-[15rem] items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950/90 px-2.5 text-[11px] font-semibold text-zinc-200 hover:border-zinc-600"
-          >
-            <span className="truncate">{currentLabel}</span>
-            <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform ${open ? 'rotate-180' : ''}`} />
-          </button>
-          {open && (
-            <div role="listbox" aria-label="Preferred models" className="absolute bottom-full left-0 mb-2 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-950 p-1.5 shadow-2xl">
-              <div className="px-2.5 py-1.5 text-[9px] uppercase tracking-[0.16em] text-zinc-600">Preferred order</div>
-              {options.map((id, index) => {
-                const meta = AVAILABLE_MODELS.find((item) => item.id.toLowerCase() === id.toLowerCase());
-                const selected = id.toLowerCase() === settings.model.trim().toLowerCase();
-                return (
-                  <button key={id} type="button" role="option" aria-selected={selected} onClick={() => selectModel(id)} className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left ${selected ? 'bg-sky-950/40 text-sky-200' : 'text-zinc-300 hover:bg-zinc-900 hover:text-white'}`}>
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-zinc-900 font-mono text-[9px] text-zinc-500">{index + 1}</span>
-                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{meta?.name || `${id} (unavailable)`}</span>
-                    {selected && <Check className="h-3.5 w-3.5 shrink-0 text-sky-400" />}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <button type="button" disabled={testing} onClick={() => void runTest()} title="Test Gemini connection" className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-950/90 px-2.5 text-[10px] font-semibold text-zinc-400 hover:border-amber-600/60 hover:text-amber-300 disabled:opacity-50">
-          {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bug className="h-3.5 w-3.5" />}
-          <span>Test</span>
+    <div className={`relative inline-flex shrink-0 flex-nowrap items-center gap-1.5 whitespace-nowrap ${compact ? '' : 'w-full'}`}>
+      <div className="relative shrink-0">
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={`Selected model: ${currentLabel}`}
+          onClick={() => setOpen((value) => !value)}
+          className="inline-flex h-9 w-[min(15rem,42vw)] max-w-[15rem] shrink-0 items-center justify-between gap-2 rounded-xl border border-zinc-700 bg-zinc-950/90 px-2.5 text-[11px] font-semibold text-zinc-200 hover:border-zinc-600"
+        >
+          <span className="min-w-0 flex-1 truncate text-left">{currentLabel}</span>
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
+        {open && (
+          <div role="listbox" aria-label="Preferred models" className="absolute bottom-full left-0 z-[100] mb-2 w-[min(20rem,calc(100vw-1rem))] overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-950 p-1.5 shadow-2xl">
+            <div className="px-2.5 py-1.5 text-[9px] uppercase tracking-[0.16em] text-zinc-600">Preferred order</div>
+            {options.map((id, index) => {
+              const meta = AVAILABLE_MODELS.find((item) => item.id.toLowerCase() === id.toLowerCase());
+              const selected = id.toLowerCase() === selectedId.toLowerCase();
+              return (
+                <button key={id} type="button" role="option" aria-selected={selected} onClick={() => selectModel(id)} className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left ${selected ? 'bg-sky-950/40 text-sky-200' : 'text-zinc-300 hover:bg-zinc-900 hover:text-white'}`}>
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-zinc-900 font-mono text-[9px] text-zinc-500">{index + 1}</span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{meta?.name || `${id} (unavailable)`}</span>
+                  {selected && <Check className="h-3.5 w-3.5 shrink-0 text-sky-400" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
+      <button type="button" disabled={testing} onClick={() => void runTest()} title="Test Gemini connection" aria-label="Test Gemini connection" className="inline-flex h-9 min-w-[4.25rem] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-950/90 px-2.5 text-[10px] font-semibold text-zinc-300 hover:border-amber-600/60 hover:text-amber-300 disabled:cursor-not-allowed disabled:opacity-50">
+        {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bug className="h-3.5 w-3.5" />}
+        <span>Test</span>
+      </button>
+
       {probe && (
-        <div className="pointer-events-auto fixed bottom-[8.75rem] left-3 right-3 z-[90] max-h-[70vh] overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-950/98 p-4 text-zinc-200 shadow-2xl sm:left-auto sm:right-5 sm:w-[min(92vw,720px)]">
+        <div className="absolute bottom-full left-0 z-[110] mb-2 max-h-[70vh] w-[min(92vw,720px)] overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-950/98 p-4 text-zinc-200 shadow-2xl sm:left-auto sm:right-0">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2">
               {probe.ok ? <CheckCircle2 className="h-4 w-4 text-emerald-400" /> : <XCircle className="h-4 w-4 text-red-400" />}
